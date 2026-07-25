@@ -8,16 +8,40 @@ import json
 import requests
 import os
 from breed_info import BREED_INFO
+from flask_sqlalchemy import SQLAlchemy
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 CORS(app)
 
+load_dotenv()
 
+# database connection
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db = SQLAlchemy(app)
+
+#model loading
 model = tf.keras.models.load_model("model/cattle_classifier.keras")
-
 
 with open("classes.txt", "r") as f:
     class_names = [line.strip() for line in f]
+
+# schema class
+class Prediction(db.Model):
+
+    __tablename__ = "predictions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    breed = db.Column(db.String(100))
+    confidence = db.Column(db.Float)
+    image_name = db.Column(db.String(255))
+
+    prediction_time = db.Column(
+        db.DateTime,
+        default=db.func.current_timestamp()
+    )
 
 
 def get_wikipedia_info(breed_name):
@@ -88,6 +112,15 @@ def predict_api():
     local_info = BREED_INFO.get(predicted_breed, {})
     wiki_info = get_wikipedia_info(predicted_breed)
 
+    record = Prediction(
+    image_name=file.filename,
+    breed=predicted_breed,
+    confidence=round(confidence * 100, 2)
+    )
+
+    db.session.add(record)
+    db.session.commit()
+
     return jsonify({
         "breed": predicted_breed,
         "confidence": round(confidence * 100, 2),
@@ -114,6 +147,27 @@ def predict_api():
         }
     })
 
+
+@app.route("/history", methods=["GET"])
+def history():
+
+    predictions = Prediction.query.order_by(
+        Prediction.prediction_time.desc()
+    ).all()
+
+    return jsonify([
+        {
+            "id": p.id,
+            "image": p.image_name,
+            "breed": p.breed,
+            "confidence": p.confidence,
+            "time": p.prediction_time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        for p in predictions
+    ])
+
+with app.app_context():
+    db.create_all()
 
 if __name__ == "__main__":
     app.run(debug=True)
